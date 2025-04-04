@@ -1,0 +1,94 @@
+#!/bin/bash
+
+# trk2vtk.sh
+# Convert a .trk file to .tck and then to .vtk using DIPY and MRtrix
+# Usage: ./trk2vtk.sh input.trk [output_prefix] [--force]
+
+set -euo pipefail
+
+# --- Helper: Print usage ---
+usage() {
+    echo "Usage: $0 <input.trk> [output_prefix] [--force]"
+    echo ""
+    echo "Arguments:"
+    echo "  input.trk        Path to the .trk file to convert."
+    echo "  output_prefix    Optional. Prefix for output .tck and .vtk files."
+    echo "                   Default: same as input filename without .trk extension."
+    echo "  --force          Optional. Overwrite output files if they exist."
+    echo ""
+    echo "Examples:"
+    echo "  $0 my_tract.trk"
+    echo "  $0 my_tract.trk output/my_output --force"
+    exit 1
+}
+
+# --- Check dependencies ---
+for cmd in python3 tckconvert; do
+    command -v "$cmd" >/dev/null 2>&1 || {
+        echo >&2 "Error: '$cmd' is required but not found in PATH."
+        exit 1
+    }
+done
+
+# --- Parse arguments ---
+FORCE=false
+ARGS=()
+
+for arg in "$@"; do
+    case "$arg" in
+        --force) FORCE=true ;;
+        -h|--help) usage ;;
+        *) ARGS+=("$arg") ;;
+    esac
+done
+
+if [ "${#ARGS[@]}" -lt 1 ]; then
+    usage
+fi
+
+INPUT_TRK="${ARGS[0]}"
+OUTPUT_PREFIX="${ARGS[1]:-${INPUT_TRK%.trk}}"
+OUTPUT_TCK="${OUTPUT_PREFIX}.tck"
+OUTPUT_VTK="${OUTPUT_PREFIX}.vtk"
+
+# --- Check input file ---
+if [ ! -f "$INPUT_TRK" ]; then
+    echo "Error: Input file '$INPUT_TRK' not found."
+    exit 1
+fi
+
+# --- Check for overwrite conflicts ---
+if ! $FORCE; then
+    for f in "$OUTPUT_TCK" "$OUTPUT_VTK"; do
+        if [ -e "$f" ]; then
+            echo "Error: Output file '$f' already exists. Use --force to overwrite."
+            exit 1
+        fi
+    done
+fi
+
+# --- Start conversion ---
+echo "Converting: $INPUT_TRK"
+echo "Output TCK: $OUTPUT_TCK"
+echo "Output VTK: $OUTPUT_VTK"
+echo "Force overwrite: $FORCE"
+
+# --- Convert TRK to TCK using DIPY ---
+python3 - <<EOF
+import nibabel as nib
+from dipy.io.streamline import load_trk, save_tck
+from dipy.io.stateful_tractogram import StatefulTractogram, Space
+
+trk = load_trk("$INPUT_TRK", 'same')
+sft = StatefulTractogram(trk.streamlines, trk.space_attributes, Space.RASMM)
+save_tck(sft, "$OUTPUT_TCK")
+EOF
+
+# --- Convert TCK to VTK using MRtrix ---
+if $FORCE; then
+    tckconvert "$OUTPUT_TCK" "$OUTPUT_VTK" -force
+else
+    tckconvert "$OUTPUT_TCK" "$OUTPUT_VTK"
+fi
+
+echo "✅ Conversion complete!"
